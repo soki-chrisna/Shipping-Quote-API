@@ -1,0 +1,13 @@
+node_modules/
+.env
+.env.*
+!.env.example
+coverage/
+*.log
+.DS_Store
+
+LEARNING*.md
+LEARNING.md
+AI-JOURNAL.md
+DELIVERY.md
+VERIFICATION.md
