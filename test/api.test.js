@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { promisify, stripVTControlCharacters } from 'node:util';
 import { calculateQuote, createApp } from '../src/app.js';
 
 const key = 'test-only-key-with-at-least-32-characters';
@@ -84,8 +84,13 @@ test('real checkout process succeeds and fails closed on authentication failure'
   t.after(() => new Promise(resolve => { app.close(resolve); app.closeAllConnections(); }));
   const run = promisify(execFile);
   const env = { ...process.env, API_KEY: key, API_BASE_URL: `http://127.0.0.1:${app.address().port}` };
-  const success = await run(process.execPath, ['examples/checkout-client.js'], { env });
-  assert.match(success.stdout, /total: 250000/);
+  for (const color of ['0', '1']) {
+    const success = await run(process.execPath, ['examples/checkout-client.js'], {
+      env: { ...env, FORCE_COLOR: color }
+    });
+    // Console colors must not affect assertions about the checkout total.
+    assert.match(stripVTControlCharacters(success.stdout), /total: 250000/);
+  }
   await assert.rejects(run(process.execPath, ['examples/checkout-client.js'], {
     env: { ...env, API_KEY: 'wrong' }
   }), error => error.code === 1 && /Checkout paused:.*401/.test(error.stderr));
