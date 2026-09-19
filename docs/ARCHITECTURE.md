@@ -30,10 +30,4 @@ No database is necessary for this use case; persisting orders would be a separat
   rotating an exposed key also requires updating/redeploying any rollback version.
 - Public GHCR images contain code. Keep confidential images private and provision read-only registry access on the VPS.
 - Docker access is powerful host access. Use a dedicated VPS and a dedicated deployment SSH key.
-- Actions and base images are version-tagged starter dependencies, not immutable supply-chain pins.
-
-## Scaling exercise
-
-Keep quote computation stateless behind a load balancer; introduce shared rate limiting and per-consumer identity.
-Measure latency/throughput/error rates before picking replica counts. Centralize logs and define an availability target.
-Move to blue/green or rolling deployment when the downtime target requires it. These are design directions, not shipped features.
+- Actions and base images are version-tagged dependencies, not immutable supply-chain pins.

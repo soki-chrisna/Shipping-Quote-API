@@ -9,11 +9,11 @@ docker build -t shipping-quote:local .
 docker run --rm --name shipping-quote-local --env-file .env -p 127.0.0.1:3000:3000 shipping-quote:local
 ```
 
-Use `npm run demo` in a second terminal. Stop the Node server first if port 3000 is already in use.
+Use `npm run checkout` in a second terminal. Stop the Node server first if port 3000 is already in use.
 
 ## Prepare an Ubuntu VPS
 
-This is a not a provisioner. It assumes SSH on port 22, Docker, Bash, and `flock`.
+The deployment script does not provision the host. It assumes SSH on port 22, Docker, Bash, and `flock`.
 Install Docker from its official instructions. Use a dedicated deploy user with Docker permission.
 Authorize a dedicated SSH public key. Keep its private key only in GitHub environment secrets.
 
@@ -40,7 +40,7 @@ Verify DNS and certificate issuance. Keep `/healthz` publicly reachable for moni
 ## GitHub setup
 
 1. Push main; wait for `test` and `publish` to succeed. The deploy job is initially skipped.
-2. For a public portfolio image, change the GHCR **package visibility** to public after its first publish.
+2. For a public image, change the GHCR **package visibility** to public after its first publish.
    Repository visibility alone does not make the package public. For a private image, authenticate the VPS
    Docker client with a credential that can read that package before deploying.
 3. Create GitHub environment `production`. Configure deployment branch restrictions to `main`;
@@ -65,22 +65,15 @@ The deploy script pulls an immutable image digest, serializes deployments, stops
 starts a replacement, and waits for Docker health. Failure restores the previous container and fails the job.
 Registry pull failure happens before stopping the old container.
 
-## Verify and save evidence
+## Post-deployment verification
 
 - Check the deploy job and server `docker ps` / `docker inspect shipping-quote` health.
 - Check `https://YOUR_DOMAIN/healthz` and run the client with `API_BASE_URL` set to that HTTPS origin.
 - In your local `.env`, use the matching server API key when running that remote client. Never commit it.
-- Save run URL, commit SHA, image digest, deployment time, and observed API result in the delivery log.
+- Save run URL, commit SHA, image digest, deployment time, and observed API result in your release record.
 - A green container check is local only. TLS/proxy/DNS still need the external client check.
 
-## Failure drill (VPS only)
-
-1. Confirm an existing deployment is healthy. Record its digest and a successful authenticated quote.
-2. Back up `~/shipping-quote.env` securely on the server. Temporarily set `API_KEY=short` in that file.
-3. Rerun the main workflow. Replacement cannot start, health fails, previous container is restored.
-   The previous container retains its original environment, so its valid key should still work.
-4. Restore the env file immediately and keep permissions at 600. Verify quote and container health again.
-5. Save the failed run and recovery evidence. Do not leave backup files containing secrets accessible to others.
+## Recovery limitations
 
 If there was no prior container, failed first deployment has nothing to restore.
 Host shutdown/forced cancellation can interrupt recovery. Inspect containers manually; a leftover

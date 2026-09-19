@@ -5,13 +5,6 @@ The service exposes authenticated quote calculation, request validation, health 
 
 No runtime npm dependencies are required.
 
-## Status
-
-The repository contains a working local implementation and delivery pipeline configuration.
-
-Local verification results are documented in [`docs/VERIFICATION.md`](docs/VERIFICATION.md).  
-Cloud deployment, production load measurements, and external consumer adoption are environment-dependent and are not claimed by this repository.
-
 ## Requirements
 
 - Git
@@ -20,14 +13,6 @@ Cloud deployment, production load measurements, and external consumer adoption a
 - Docker for container builds and smoke testing
 - A GitHub account for CI/CD execution
 - A Linux VPS and domain only when enabling deployment
-
-Verify your local environment:
-
-```bash
-git --version
-node --version
-npm --version
-```
 
 ## Local Setup
 
@@ -57,10 +42,10 @@ npm start
 In a second terminal:
 
 ```powershell
-npm run demo
+npm run checkout
 ```
 
-Expected demo response:
+Expected checkout result:
 
 - Cart: IDR 200,000
 - Shipping: IDR 50,000
@@ -86,7 +71,7 @@ flowchart LR
 
 The API is stateless and does not persist orders.
 
-The included checkout client is a separate consumer process used to demonstrate integration behavior.
+The included checkout client is a separate consumer process that requests a quote and calculates the cart total.
 
 For architecture decisions, tradeoffs, and known security limitations, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
@@ -179,6 +164,7 @@ A successful CI run confirms that the configured workflow steps completed succes
 ```text
 src/
   app.js                    HTTP API and business rules
+  server.js                 Server startup and shutdown
 
 examples/
   checkout-client.js        Example API consumer
@@ -195,26 +181,7 @@ scripts/
 docs/
   ARCHITECTURE.md           Architecture decisions and tradeoffs
   DEPLOYMENT.md             Deployment runbook
-  VERIFICATION.md           Verification results
 ```
-
-## Publishing to GitHub
-
-Create an empty GitHub repository, then:
-
-```powershell
-git init -b main
-git add .
-git status
-git diff --cached --stat
-git commit -m "Add shipping quote API and delivery pipeline"
-git remote add origin https://github.com/YOUR_USERNAME/shipping-quote-api.git
-git push -u origin main
-```
-
-Before committing, verify that `.env` is not staged.
-
-A push to `main` runs the pipeline and publishes the container image to GHCR. Deployment remains disabled until configured explicitly.
 
 ## Security Notes
 
@@ -236,15 +203,3 @@ For production use, additional controls should be considered, including secret m
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
-- [`docs/VERIFICATION.md`](docs/VERIFICATION.md)
-
-## References
-
-- [Node.js Test Runner](https://nodejs.org/api/test.html)
-- [Publishing Docker Images with GitHub Actions](https://docs.github.com/en/actions/tutorials/publish-packages/publish-docker-images)
-- [GitHub Container Registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)
-- [Dockerfile Reference](https://docs.docker.com/reference/dockerfile/)
-
-## License
-
-Add the appropriate license for the intended use of this repository.

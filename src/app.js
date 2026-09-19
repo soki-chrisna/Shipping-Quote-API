@@ -21,7 +21,7 @@ export function createApp({ apiKey, rateLimit = 60, windowMs = 60000,
     throw new Error('API_KEY must contain at least 32 characters and must not be the example value.');
   }
   const expected = hash(`Bearer ${apiKey}`);
-  // One bounded, process-local bucket: deliberately a demo load-shedding limit.
+  // One bounded, process-local bucket shared by all business requests.
   let windowStart = now();
   let requests = 0;
   const server = http.createServer(async (req, res) => {
