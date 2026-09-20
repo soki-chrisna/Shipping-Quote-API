@@ -163,7 +163,9 @@ A successful CI run confirms that the configured workflow steps completed succes
 
 ```text
 src/
-  app.js                    HTTP API and business rules
+  app.js                    HTTP routing, security, and request handling
+  healthcheck.js            Container health probe
+  quote.js                  Quote validation and pricing rules
   server.js                 Server startup and shutdown
 
 examples/
@@ -176,7 +178,9 @@ test/
   pipeline.yml              CI/CD workflow
 
 scripts/
+  check-syntax.js           JavaScript syntax verification
   deploy.sh                 Digest-based deployment and health-check rollback
+  verify-quote-response.js  CI smoke-test response verification
 
 docs/
   ARCHITECTURE.md           Architecture decisions and tradeoffs
