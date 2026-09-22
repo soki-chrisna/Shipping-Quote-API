@@ -9,3 +9,4 @@ coverage/
 *.local.md
 # Added by code-review-graph
 .code-review-graph/
+docs/SCALABILITY-LAB.md
