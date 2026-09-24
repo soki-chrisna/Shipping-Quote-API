@@ -104,6 +104,48 @@ test('returns the expected quote contract', async testContext => {
   assert.equal(response.headers.get('cache-control'), 'no-store');
 });
 
+test('keeps rate limit counters isolated between instances', async (testContext) => {
+  const clientOne = await createTestClient(testContext, {
+    rateLimit: 2, windowMs: 60000, now: () => 0
+  });
+
+  const clientOneResponse = await clientOne();
+  assert.equal(clientOneResponse.status, 200);
+  const secondClientOneResponse = await clientOne();
+  assert.equal(secondClientOneResponse.status, 200);
+  const thirdClientOneResponse = await clientOne();
+  assert.equal(thirdClientOneResponse.status, 429);
+  assert.equal(thirdClientOneResponse.headers.get('retry-after'), '60');
+
+  const healthCheck = await clientOne({}, {
+    path: '/healthz',
+    method: 'GET',
+    body: undefined,
+    headers: {}
+  });
+
+  assert.equal(healthCheck.status, 200);
+
+  const clientTwo = await createTestClient(testContext, {
+    rateLimit: 2, windowMs: 60000, now: () => 0
+  });
+  const clientTwoResponse = await clientTwo();
+  assert.equal(clientTwoResponse.status, 200);
+  const secondClientTwoResponse = await clientTwo();
+  assert.equal(secondClientTwoResponse.status, 200);
+  const thirdClientTwoResponse = await clientTwo();
+  assert.equal(thirdClientTwoResponse.status, 429);
+  assert.equal(thirdClientTwoResponse.headers.get('retry-after'), '60');
+  
+  const secondHealthCheck = await clientTwo({}, {
+    path: '/healthz',
+    method: 'GET',
+    body: undefined,
+    headers: {}
+  });
+  assert.equal(secondHealthCheck.status, 200);
+});
+
 test('rejects missing and incorrect credentials', async testContext => {
   const requestQuote = await createTestClient(testContext);
 
