@@ -1,0 +1,181 @@
+# Shipping Quote API Reference
+
+This document describes the HTTP API implemented by [`src/app.js`](../src/app.js) and the quote rules in [`src/quote.js`](../src/quote.js). It is intended for application developers integrating with the service.
+
+The service is stateless and returns a shipping price estimate from a shipping zone and package weight. The configured prices are sample application data; they are not live carrier quotes or a shipping booking.
+
+## At a glance
+
+| Method | Path | Authentication | Purpose |
+|---|---|---|---|
+| `GET` | `/healthz` | None | Process liveness check |
+| `POST` | `/v1/quotes` | Bearer API key | Calculate a shipping quote |
+
+The API uses JSON for request and response bodies. It does not persist quotes, create shipments, or accept client-provided prices.
+
+## Base URL and transport
+
+For local development, the default server listens on `http://127.0.0.1:3000`. The port can be changed with the `PORT` environment variable. Use your deployed API origin as the base URL in other environments.
+
+The Node.js server itself speaks HTTP. Remote deployments should put it behind a TLS-terminating reverse proxy; send credentials only over HTTPS outside a trusted local development environment.
+
+## Authentication
+
+`POST /v1/quotes` uses one shared bearer token:
+
+```http
+Authorization: Bearer <API_KEY>
+```
+
+The server's `API_KEY` must be set when the process starts, contain at least 32 characters, and not start with `replace-`. Missing or incorrect credentials produce `401 Unauthorized`.
+
+`GET /healthz` does not require authentication. The service currently has no user accounts, scopes, tenants, per-client keys, or key expiry. Treat the API key as a secret: store it in a secret manager or environment configuration and do not place it in source control or logs.
+
+## Health check
+
+### `GET /healthz`
+
+Returns a liveness response when the server can handle requests. It does not require a bearer token and is exempt from the application rate limit. It does not check external dependencies or indicate that a quote request will pass authentication or validation.
+
+#### Success: `200 OK`
+
+```json
+{"status":"ok"}
+```
+
+## Create a quote
+
+### `POST /v1/quotes`
+
+Calculates the sample shipping price for a zone and package weight.
+
+#### Request headers
+
+```http
+Authorization: Bearer <API_KEY>
+Content-Type: application/json
+```
+
+The media type comparison is case-insensitive and permits parameters such as `application/json; charset=utf-8`.
+
+#### Request body
+
+The body must be a JSON object with exactly these two properties. Additional properties are rejected.
+
+| Property | Type | Required | Constraints |
+|---|---|---:|---|
+| `zone` | string | Yes | `local` or `domestic` |
+| `weightGrams` | integer | Yes | From `1` through `30000`, inclusive |
+
+Example:
+
+```json
+{
+  "zone": "domestic",
+  "weightGrams": 1500
+}
+```
+
+The complete request body is limited to 4,096 bytes. Fractional values, numeric strings, unsupported zones, missing properties, and extra properties are invalid.
+
+#### Success: `200 OK`
+
+```json
+{
+  "currency": "IDR",
+  "amount": 50000,
+  "billableKg": 2,
+  "rateVersion": "2026-01"
+}
+```
+
+| Property | Type | Description |
+|---|---|---|
+| `currency` | string | Always `IDR` for the current rate set. |
+| `amount` | integer | Total quote amount in whole Indonesian rupiah. |
+| `billableKg` | integer | Package weight rounded up to the next whole kilogram. |
+| `rateVersion` | string | Version identifier for the rate set used to calculate the quote. |
+
+The calculation is `rate per kilogram × billable kilograms`, where `billableKg = ceil(weightGrams / 1000)`.
+
+| Zone | Sample rate |
+|---|---:|
+| `local` | IDR 10,000 per billable kg |
+| `domestic` | IDR 25,000 per billable kg |
+
+For example, a 1,001 gram domestic package is billed as 2 kg and returns `amount: 50000`. A 1 gram local package is billed as 1 kg and returns `amount: 10000`.
+
+#### cURL example
+
+```bash
+curl --fail-with-body --request POST 'http://localhost:3000/v1/quotes' \
+  --header 'Authorization: Bearer YOUR_API_KEY' \
+  --header 'Content-Type: application/json' \
+  --data '{"zone":"domestic","weightGrams":1500}'
+```
+
+Replace the example token with the configured secret. Use the HTTPS deployment URL for remote requests.
+
+## Error responses
+
+Errors are JSON objects with an `error` property. Except for rate limiting, they also include a `requestId` property matching the `X-Request-Id` response header.
+
+| Status | Error | Meaning |
+|---:|---|---|
+| `400` | `invalid_json` | The body is not valid JSON. |
+| `400` | `request_aborted` | The request body could not be read to completion. |
+| `401` | `unauthorized` | The bearer token is missing or incorrect. |
+| `404` | `not_found` | The requested path is not recognized. |
+| `405` | `method_not_allowed` | The path is recognized but the method is not supported. Includes `Allow: POST` for the quote path. |
+| `413` | `body_too_large` | The request body exceeds 4,096 bytes. The connection is closed. |
+| `415` | `use_application_json` | The request `Content-Type` is not `application/json`. |
+| `422` | Validation message | The JSON value does not match the quote input schema or constraints. |
+| `429` | `rate_limit_exceeded` | The process-local request quota has been exceeded. Includes `Retry-After`. |
+
+Example validation error:
+
+```json
+{
+  "error": "Use zone local/domestic and integer weightGrams 1..30000; no extra fields.",
+  "requestId": "7d9104fd-3458-41d0-b035-bfb34e854a9d"
+}
+```
+
+All non-health requests pass through checks in this order: rate limit, authentication, path, method, content type, JSON parsing, and quote validation. If a request violates multiple rules, the first failed check determines the response. In particular, a request to an unknown path without valid credentials is rejected as `401` before it can receive `404`.
+
+## Rate limiting and request limits
+
+By default, the service allows 60 non-health requests per 60-second window per process. Both values are configurable when creating the application in code (`rateLimit` and `windowMs`); they are not exposed as server environment variables by the executable entry point.
+
+The quota is shared across all callers in a process and includes unauthorized and otherwise invalid business requests. It is held in process memory, so it resets when the process restarts and is not coordinated across replicas. A `429` response includes `Retry-After` in seconds.
+
+The server also sets a 10-second request timeout, a 10-second header timeout, a 15-second socket timeout, and a maximum of 30 request headers. These are server-side operational limits rather than per-route API parameters.
+
+## Response headers and request tracing
+
+Every response receives these headers:
+
+| Header | Purpose |
+|---|---|
+| `Content-Type` | `application/json; charset=utf-8` |
+| `X-Request-Id` | UUID identifying this request; use it when correlating client reports with server logs. |
+| `Cache-Control` | `no-store`, to prevent response caching. |
+| `X-Content-Type-Options` | `nosniff`. |
+
+Error-specific headers include `Retry-After` on `429` and `Allow: POST` on `405` for `/v1/quotes`.
+
+The server emits one structured JSON log event when a response finishes, containing the request ID, HTTP method, status code, and duration in milliseconds. It does not log authorization credentials or request bodies.
+
+## Client integration notes
+
+- Treat `amount` as an integer number of IDR, not a decimal major-unit value.
+- Use `rateVersion` if a consumer needs to record which sample rate set produced a quote.
+- Handle non-2xx responses explicitly; a failed quote must not be interpreted as free shipping.
+- On `429`, wait for at least the number of seconds in `Retry-After` before retrying. The response does not guarantee that retrying will succeed if other callers continue using the shared quota.
+- This endpoint estimates a price only. It does not reserve capacity, validate an address, or book a carrier service.
+
+## Source and configuration
+
+The executable entry point is [`src/server.js`](../src/server.js); it reads `API_KEY` and optional `PORT`, starts the HTTP server, and handles `SIGTERM` and `SIGINT`. The reusable `createApp()` function is exported from [`src/app.js`](../src/app.js) and accepts `apiKey`, `rateLimit`, `windowMs`, `now`, and `logger` options. The quote calculation is also exported as `calculateQuote()` from `src/app.js`.
+
+See the [repository README](../README.md) for setup and the [architecture notes](ARCHITECTURE.md) for security decisions and operational limitations.
