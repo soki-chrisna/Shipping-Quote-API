@@ -2,6 +2,7 @@ import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import http from 'node:http';
 
 import { calculateQuote } from './quote.js';
+import { openApiDocument, swaggerHtml } from './openapi.js';
 
 export { calculateQuote } from './quote.js';
 
@@ -114,6 +115,17 @@ function createRequestHandler({ apiKey, rateLimit, windowMs, now, logger }) {
 
     if (request.method === 'GET' && request.url === '/healthz') {
       sendJson(response, 200, { status: 'ok' });
+      return;
+    }
+
+    if (request.method === 'GET' && (request.url === '/docs' || request.url === '/docs/')) {
+      response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      response.end(swaggerHtml);
+      return;
+    }
+
+    if (request.method === 'GET' && request.url === '/openapi.json') {
+      sendJson(response, 200, openApiDocument);
       return;
     }
 

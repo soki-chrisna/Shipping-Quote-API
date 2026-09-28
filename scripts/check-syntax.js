@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 
 const files = [
   'src/app.js',
+  'src/openapi.js',
   'src/healthcheck.js',
   'src/quote.js',
   'src/server.js',

@@ -6,6 +6,13 @@ The service is stateless and returns a shipping price estimate from a shipping z
 
 ## At a glance
 
+Interactive documentation is available at [`/docs`](http://localhost:3000/docs), with the
+machine-readable OpenAPI contract at [`/openapi.json`](http://localhost:3000/openapi.json).
+Both support public GET requests without consuming the business rate limit. In Swagger UI,
+click **Authorize** and enter the configured API key without the `Bearer ` prefix.
+The UI uses pinned CDN assets and needs browser internet access; the JSON contract does not.
+See [`src/openapi.js`](../src/openapi.js) to maintain the specification alongside API changes.
+
 | Method | Path | Authentication | Purpose |
 |---|---|---|---|
 | `GET` | `/healthz` | None | Process liveness check |
@@ -118,7 +125,7 @@ Replace the example token with the configured secret. Use the HTTPS deployment U
 
 ## Error responses
 
-Errors are JSON objects with an `error` property. Except for rate limiting, they also include a `requestId` property matching the `X-Request-Id` response header.
+Errors are JSON objects with an `error` property and a `requestId` property matching the `X-Request-Id` response header.
 
 | Status | Error | Meaning |
 |---:|---|---|
@@ -141,11 +148,11 @@ Example validation error:
 }
 ```
 
-All non-health requests pass through checks in this order: rate limit, authentication, path, method, content type, JSON parsing, and quote validation. If a request violates multiple rules, the first failed check determines the response. In particular, a request to an unknown path without valid credentials is rejected as `401` before it can receive `404`.
+All requests except public health and documentation GET requests pass through checks in this order: rate limit, authentication, path, method, content type, JSON parsing, and quote validation. If a request violates multiple rules, the first failed check determines the response. In particular, a request to an unknown path without valid credentials is rejected as `401` before it can receive `404`.
 
 ## Rate limiting and request limits
 
-By default, the service allows 60 non-health requests per 60-second window per process. Both values are configurable when creating the application in code (`rateLimit` and `windowMs`); they are not exposed as server environment variables by the executable entry point.
+By default, the service allows 60 business requests per 60-second window per process. Public health and documentation GET requests are exempt. Both values are configurable when creating the application in code (`rateLimit` and `windowMs`); they are not exposed as server environment variables by the executable entry point.
 
 The quota is shared across all callers in a process and includes unauthorized and otherwise invalid business requests. It is held in process memory, so it resets when the process restarts and is not coordinated across replicas. A `429` response includes `Retry-After` in seconds.
 
@@ -157,7 +164,7 @@ Every response receives these headers:
 
 | Header | Purpose |
 |---|---|
-| `Content-Type` | `application/json; charset=utf-8` |
+| `Content-Type` | `application/json; charset=utf-8` (Swagger UI uses `text/html; charset=utf-8`) |
 | `X-Request-Id` | UUID identifying this request; use it when correlating client reports with server logs. |
 | `Cache-Control` | `no-store`, to prevent response caching. |
 | `X-Content-Type-Options` | `nosniff`. |

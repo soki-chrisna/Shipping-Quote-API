@@ -104,6 +104,49 @@ test('returns the expected quote contract', async testContext => {
   assert.equal(response.headers.get('cache-control'), 'no-store');
 });
 
+test('serves public Swagger docs without consuming the business quota', async testContext => {
+  const request = await createTestClient(testContext, { rateLimit: 1 });
+  const get = path => request({}, { path, method: 'GET', body: undefined, headers: {} });
+
+  for (const path of ['/docs', '/docs/']) {
+    const response = await get(path);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type'), /text\/html/);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    const html = await response.text();
+    assert.match(html, /SwaggerUIBundle/);
+    assert.match(html, /url: '\/openapi.json'/);
+    assert.ok(!html.includes(API_KEY));
+  }
+
+  const specResponse = await get('/openapi.json');
+  assert.equal(specResponse.status, 200);
+  assert.match(specResponse.headers.get('content-type'), /application\/json/);
+  const spec = await specResponse.json();
+  assert.equal(spec.openapi, '3.0.3');
+  assert.deepEqual(spec.paths['/healthz'].get.security, []);
+  assert.deepEqual(spec.security, [{ bearerAuth: [] }]);
+  assert.equal(spec.components.securitySchemes.bearerAuth.scheme, 'bearer');
+  assert.ok(!JSON.stringify(spec).includes(API_KEY));
+
+  // Execute the documented request and compare the documented success example.
+  const operation = spec.paths['/v1/quotes'].post;
+  const quote = await request(operation.requestBody.content['application/json'].example);
+  assert.equal(quote.status, 200);
+  assert.deepEqual(await quote.json(), operation.responses['200'].content['application/json'].example);
+  assert.equal((await request()).status, 429);
+  assert.equal((await get('/docs')).status, 200);
+  assert.equal((await get('/openapi.json')).status, 200);
+});
+
+test('documentation routes do not bypass authentication for other methods or paths', async testContext => {
+  const request = await createTestClient(testContext);
+  for (const path of ['/docs', '/openapi.json', '/docs/private']) {
+    assert.equal((await request({}, { path, headers: {} })).status, 401);
+    assert.equal((await request({}, { path })).status, 404);
+  }
+});
+
 test('keeps rate limit counters isolated between instances', async (testContext) => {
   const clientOne = await createTestClient(testContext, {
     rateLimit: 2, windowMs: 60000, now: () => 0
