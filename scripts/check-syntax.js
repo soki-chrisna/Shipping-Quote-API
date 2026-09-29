@@ -9,6 +9,7 @@ const files = [
   'src/server.js',
   'examples/checkout-client.js',
   'scripts/check-syntax.js',
+  'scripts/generate-error-log-demo.js',
   'scripts/verify-quote-response.js',
   'test/api.test.js'
 ];

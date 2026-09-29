@@ -10,6 +10,7 @@
     "start": "node --env-file=.env src/server.js",
     "test": "node --test",
     "check": "node scripts/check-syntax.js",
+    "demo:errors": "node scripts/generate-error-log-demo.js",
     "checkout": "node --env-file=.env examples/checkout-client.js"
   }
 }

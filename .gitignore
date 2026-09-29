@@ -4,9 +4,11 @@ node_modules/
 !.env.example
 coverage/
 *.log
+!docs/examples/error-handling/error-handling.sample.log
 .DS_Store
 
 *.local.md
 # Added by code-review-graph
 .code-review-graph/
 docs/SCALABILITY-LAB.md
+docs/examples/error-handling/README.md

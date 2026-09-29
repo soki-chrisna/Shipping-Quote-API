@@ -1,0 +1,113 @@
+[
+  {
+    "scenario": "successful-quote",
+    "status": 200,
+    "requestId": "1d97a6fd-90b9-47dc-9c2f-7f56ab10825d",
+    "body": {
+      "currency": "IDR",
+      "amount": 10000,
+      "billableKg": 1,
+      "rateVersion": "2026-01"
+    }
+  },
+  {
+    "scenario": "missing-credentials",
+    "status": 401,
+    "requestId": "7a39840a-4c31-4abf-8628-1a42a822a4d8",
+    "body": {
+      "error": "unauthorized",
+      "message": "Authentication is required.",
+      "requestId": "7a39840a-4c31-4abf-8628-1a42a822a4d8"
+    }
+  },
+  {
+    "scenario": "malformed-json",
+    "status": 400,
+    "requestId": "d54e8233-1e9a-4500-ab08-167531afcea0",
+    "body": {
+      "error": "invalid_json",
+      "message": "The request could not be processed.",
+      "requestId": "d54e8233-1e9a-4500-ab08-167531afcea0"
+    }
+  },
+  {
+    "scenario": "invalid-quote",
+    "status": 422,
+    "requestId": "2ff7c06f-6397-451f-990c-c34e6bc0f921",
+    "body": {
+      "error": "invalid_request",
+      "message": "The request is invalid.",
+      "requestId": "2ff7c06f-6397-451f-990c-c34e6bc0f921"
+    }
+  },
+  {
+    "scenario": "unknown-route",
+    "status": 404,
+    "requestId": "42ff4799-43f3-4aaf-859c-c08419554701",
+    "body": {
+      "error": "not_found",
+      "message": "The requested resource was not found.",
+      "requestId": "42ff4799-43f3-4aaf-859c-c08419554701"
+    }
+  },
+  {
+    "scenario": "unsupported-method",
+    "status": 405,
+    "requestId": "655b4e7a-9e8b-47bd-b01e-5f2aeb8c190d",
+    "body": {
+      "error": "method_not_allowed",
+      "message": "This request method is not supported.",
+      "requestId": "655b4e7a-9e8b-47bd-b01e-5f2aeb8c190d"
+    }
+  },
+  {
+    "scenario": "unsupported-content-type",
+    "status": 415,
+    "requestId": "e0c19b83-a525-4621-b7de-982e408cbd84",
+    "body": {
+      "error": "use_application_json",
+      "message": "The request format is not supported.",
+      "requestId": "e0c19b83-a525-4621-b7de-982e408cbd84"
+    }
+  },
+  {
+    "scenario": "oversized-body",
+    "status": 413,
+    "requestId": "dff4142e-b581-494b-b00b-cf858cd22762",
+    "body": {
+      "error": "body_too_large",
+      "message": "The request is too large.",
+      "requestId": "dff4142e-b581-494b-b00b-cf858cd22762"
+    }
+  },
+  {
+    "scenario": "quota-exceeded",
+    "status": 429,
+    "requestId": "145e6891-5ef2-4013-b163-446a85e53f55",
+    "body": {
+      "error": "rate_limit_exceeded",
+      "message": "Too many requests. Please try again later.",
+      "requestId": "145e6891-5ef2-4013-b163-446a85e53f55"
+    }
+  },
+  {
+    "scenario": "simulated-service-failure",
+    "status": 500,
+    "requestId": "96e03feb-4113-4d43-9b78-f8f070e06d38",
+    "body": {
+      "error": "internal_error",
+      "message": "Something went wrong. Please try again later.",
+      "requestId": "96e03feb-4113-4d43-9b78-f8f070e06d38"
+    }
+  },
+  {
+    "scenario": "simulated-response-failure",
+    "status": 500,
+    "requestId": "5edd9ef2-a011-4713-b97b-e43bf230c7e7",
+    "body": {
+      "error": "internal_error",
+      "message": "Something went wrong. Please try again later.",
+      "requestId": "5edd9ef2-a011-4713-b97b-e43bf230c7e7"
+    }
+  }
+]

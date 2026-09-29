@@ -6,6 +6,8 @@ The application uses only built-in Node.js APIs. There are no runtime npm depend
 
 > The included rates are sample application data, not real carrier rates.
 
+For a reproducible demonstration, see the [error logging walkthrough](docs/examples/error-handling/README.md), including captured server logs and matching client responses. Run `npm run demo:errors` to regenerate the samples locally.
+
 ## Requirements
 
 - Git
