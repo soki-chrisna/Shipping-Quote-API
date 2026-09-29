@@ -125,7 +125,7 @@ Replace the example token with the configured secret. Use the HTTPS deployment U
 
 ## Error responses
 
-Errors are JSON objects with an `error` property and a `requestId` property matching the `X-Request-Id` response header.
+Errors contain a stable `error` code, a general client-safe `message`, and a `requestId` matching the `X-Request-Id` response header. Exception messages, stack traces, and causes are never returned to clients.
 
 | Status | Error | Meaning |
 |---:|---|---|
@@ -136,14 +136,16 @@ Errors are JSON objects with an `error` property and a `requestId` property matc
 | `405` | `method_not_allowed` | The path is recognized but the method is not supported. Includes `Allow: POST` for the quote path. |
 | `413` | `body_too_large` | The request body exceeds 4,096 bytes. The connection is closed. |
 | `415` | `use_application_json` | The request `Content-Type` is not `application/json`. |
-| `422` | Validation message | The JSON value does not match the quote input schema or constraints. |
+| `422` | `invalid_request` | The JSON value does not match the quote input schema or constraints. |
 | `429` | `rate_limit_exceeded` | The process-local request quota has been exceeded. Includes `Retry-After`. |
+| `500` | `internal_error` | An unexpected server failure occurred. |
 
 Example validation error:
 
 ```json
 {
-  "error": "Use zone local/domestic and integer weightGrams 1..30000; no extra fields.",
+  "error": "invalid_request",
+  "message": "The request is invalid.",
   "requestId": "7d9104fd-3458-41d0-b035-bfb34e854a9d"
 }
 ```
@@ -171,7 +173,13 @@ Every response receives these headers:
 
 Error-specific headers include `Retry-After` on `429` and `Allow: POST` on `405` for `/v1/quotes`.
 
-The server emits one structured JSON log event when a response finishes, containing the request ID, HTTP method, status code, and duration in milliseconds. It does not log authorization credentials or request bodies.
+The server emits a `request_completed` JSON event when a response finishes, containing the request ID, HTTP method, status code, and duration in milliseconds. Each application failure also emits one `request_failed` event with its timestamp, severity, request ID, status, error code, originating layer, and internal error details (name, message, stack, and nested causes up to five levels). Rejections use `warn`; unexpected failures use `error` and HTTP 500. Body reading, JSON parsing, and quote calculation have separate error boundaries; the outer HTTP boundary logs once and selects the public response. Layers are `rate_limit`, `authentication`, `routing`, `content_type`, `body`, `parsing`, `validation`, `quote_service`, and `http`.
+
+To investigate a client report, search the server logs for the returned `requestId`, then inspect `layer` and `error.cause`. Logs are written to standard output by default; deployment log collection must retain them for investigation. If a custom logger throws, the event falls back to standard error. Disconnected clients may have a failure event without a completed response.
+
+Every request-related log, including failures and stderr fallback events, contains `caller: { id, authenticated, ip }`. Valid bearer credentials produce `id: "shared-api-client"` and `authenticated: true`; missing or invalid credentials produce `id: null` and `authenticated: false`. Identity is checked for logging on public routes and rate-limited requests too, without changing which response takes precedence. The shared key identifies an API client, not an individual person; identifying individual users requires per-user authentication. `ip` is the direct connection address, captured before a possible disconnect. Behind a proxy it is the proxy address. Forwarding and user identity headers are not trusted or logged as verified identity.
+
+Request headers, URLs, and bodies are not attached to log events. JSON parser excerpts are removed because they can contain submitted data; parser type and call frames remain. The configured API key is redacted from log strings. Internal service errors retain their details, so service code must avoid including other secrets in exception messages and access to logs should be restricted.
 
 ## Client integration notes
 
@@ -183,6 +191,6 @@ The server emits one structured JSON log event when a response finishes, contain
 
 ## Source and configuration
 
-The executable entry point is [`src/server.js`](../src/server.js); it reads `API_KEY` and optional `PORT`, starts the HTTP server, and handles `SIGTERM` and `SIGINT`. The reusable `createApp()` function is exported from [`src/app.js`](../src/app.js) and accepts `apiKey`, `rateLimit`, `windowMs`, `now`, and `logger` options. The quote calculation is also exported as `calculateQuote()` from `src/app.js`.
+The executable entry point is [`src/server.js`](../src/server.js); it reads `API_KEY` and optional `PORT`, starts the HTTP server, and handles `SIGTERM` and `SIGINT`. The reusable `createApp()` function is exported from [`src/app.js`](../src/app.js) and accepts `apiKey`, `rateLimit`, `windowMs`, `now`, `logger`, and `quoteCalculator` options. The optional calculator defaults to `calculateQuote()` and supports asynchronous implementations. The quote calculation is also exported as `calculateQuote()` from `src/app.js`.
 
 See the [repository README](../README.md) for setup and the [architecture notes](ARCHITECTURE.md) for security decisions and operational limitations.

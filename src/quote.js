@@ -1,3 +1,5 @@
+import { QuoteValidationError } from './errors.js';
+
 const MIN_WEIGHT_GRAMS = 1;
 const MAX_WEIGHT_GRAMS = 30000;
 const GRAMS_PER_KILOGRAM = 1000;
@@ -26,7 +28,7 @@ function isValidQuoteInput(input) {
 
 export function calculateQuote(input) {
   if (!isValidQuoteInput(input)) {
-    throw new Error('Use zone local/domestic and integer weightGrams 1..30000; no extra fields.');
+    throw new QuoteValidationError();
   }
 
   const billableKg = Math.ceil(input.weightGrams / GRAMS_PER_KILOGRAM);

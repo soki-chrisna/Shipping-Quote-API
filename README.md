@@ -160,7 +160,7 @@ Example response:
 
 Rate-limited responses include `Retry-After`. All responses include `X-Request-Id`, `Cache-Control: no-store`, and `X-Content-Type-Options: nosniff`.
 
-Request logs are emitted as structured JSON with the request ID, method, status, and duration. Bearer tokens and request bodies are not logged.
+Request logs are emitted as structured JSON with the request ID, method, status, and duration. Every request completion and failure log includes `caller` with the authenticated shared API client identity (or null), authentication status, and direct connection IP address. The shared key cannot identify individual users. Bearer tokens and request bodies are not logged.
 
 ## Architecture
 

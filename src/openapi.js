@@ -1,3 +1,5 @@
+import { publicErrors } from './errors.js';
+
 const requestIdHeader = {
   description: 'Request identifier, also included in error response bodies.',
   schema: { type: 'string', format: 'uuid' }
@@ -14,6 +16,7 @@ function jsonResponse(description, schema, example, headers = {}) {
 function errorResponse(description, error, headers) {
   return jsonResponse(description, { $ref: '#/components/schemas/Error' }, {
     error,
+    message: publicErrors[error][1],
     requestId: '7d9104fd-3458-41d0-b035-bfb34e854a9d'
   }, headers);
 }
@@ -79,7 +82,8 @@ export const openApiDocument = {
           }),
           415: errorResponse('Content-Type must be application/json (parameters are allowed).', 'use_application_json'),
           422: errorResponse('Input does not match the request schema.',
-            'Use zone local/domestic and integer weightGrams 1..30000; no extra fields.'),
+            'invalid_request'),
+          500: errorResponse('Unexpected server failure.', 'internal_error'),
           429: errorResponse('Shared process quota exceeded.', 'rate_limit_exceeded', {
             'Retry-After': {
               description: 'Seconds until the current rate limit window ends.',
@@ -116,9 +120,10 @@ export const openApiDocument = {
         }
       },
       Error: {
-        type: 'object', additionalProperties: false, required: ['error', 'requestId'],
+        type: 'object', additionalProperties: false, required: ['error', 'message', 'requestId'],
         properties: {
           error: { type: 'string' },
+          message: { type: 'string', description: 'General client-safe message; never exception details.' },
           requestId: { type: 'string', format: 'uuid' }
         }
       }
