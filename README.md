@@ -214,6 +214,7 @@ The image contains only `src/`, runs as the non-root `node` user, and defines `s
 ```text
 src/
   app.js                    HTTP routing, security, and request handling
+  errors.js                 Error definitions and safe structured logging
   healthcheck.js            Container health probe
   openapi.js                OpenAPI contract and Swagger UI page
   quote.js                  Quote validation and pricing rules
@@ -234,6 +235,7 @@ scripts/
   pipeline.yml              Test, image publishing, and deployment workflow
 
 docs/
+  API.md                    Request, response, and logging contracts
   ARCHITECTURE.md           Architecture decisions, limits, and tradeoffs
   DEPLOYMENT.md             Deployment and recovery runbook
 ```
@@ -256,6 +258,7 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) before changing authenticatio
 
 ## Documentation
 
+- [`docs/API.md`](docs/API.md) — request, response, and logging contracts
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — boundaries, security decisions, and known limitations
 - [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — local Docker usage and production deployment
 - [`AGENTS.md`](AGENTS.md) — repository-specific guidance for AI-assisted changes

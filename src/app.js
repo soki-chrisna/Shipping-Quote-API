@@ -11,8 +11,9 @@ const CONTENT_TYPE_JSON = 'application/json; charset=utf-8';
 const MAX_BODY_BYTES = 4096;
 const MIN_API_KEY_LENGTH = 32;
 
-function hash(value) {
-  return createHash('sha256').update(value).digest();
+function hashAuthorization(authorization) {
+  // timingSafeEqual requires equal-length buffers, even for invalid credentials.
+  return createHash('sha256').update(authorization).digest();
 }
 
 function validateApiKey(apiKey) {
@@ -65,33 +66,44 @@ function isJsonRequest(request) {
 
 async function readJsonBody(request) {
   const chunks = [];
-  let size = 0;
+  let receivedBytes = 0;
 
   try {
     for await (const chunk of request) {
-      size += chunk.length;
+      receivedBytes += chunk.length;
 
-      if (size > MAX_BODY_BYTES) {
+      if (receivedBytes > MAX_BODY_BYTES) {
         throw new LayerError('body', 'body_too_large', `Request body exceeded ${MAX_BODY_BYTES} bytes.`);
       }
 
       chunks.push(chunk);
     }
   } catch (error) {
-    if (error instanceof LayerError) throw error;
-    const code = request.aborted || error.code === 'ECONNRESET' ? 'request_aborted' : 'internal_error';
+    if (error instanceof LayerError) {
+      throw error;
+    }
+
+    const wasDisconnected = request.aborted || error.code === 'ECONNRESET';
+    const code = wasDisconnected ? 'request_aborted' : 'internal_error';
     throw new LayerError('body', code, 'Failed to read request body.', error);
   }
 
+  return parseRequestJson(Buffer.concat(chunks).toString('utf8'));
+}
+
+function parseRequestJson(bodyText) {
   try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    return JSON.parse(bodyText);
   } catch (error) {
-    if (!(error instanceof SyntaxError)) throw error;
-    // JSON.parse messages can contain body excerpts. Keep type and call frames,
-    // but remove the excerpt before retaining the cause in internal logs.
-    const cause = new SyntaxError('Malformed JSON; request content omitted.');
-    cause.stack = `${cause.name}: ${cause.message}\n${error.stack.split('\n').filter(line => /^\s+at /.test(line)).join('\n')}`;
-    throw new LayerError('parsing', 'invalid_json', 'Failed to parse request JSON.', cause);
+    if (!(error instanceof SyntaxError)) {
+      throw error;
+    }
+
+    // JSON.parse messages can contain submitted data; retain only call frames.
+    const sanitizedCause = new SyntaxError('Malformed JSON; request content omitted.');
+    const stackFrames = error.stack.split('\n').filter(line => /^\s+at /.test(line));
+    sanitizedCause.stack = `${sanitizedCause.name}: ${sanitizedCause.message}\n${stackFrames.join('\n')}`;
+    throw new LayerError('parsing', 'invalid_json', 'Failed to parse request JSON.', sanitizedCause);
   }
 }
 
@@ -101,7 +113,7 @@ function addResponseHeaders(response, requestId) {
   response.setHeader('Cache-Control', 'no-store');
 }
 
-function addRequestLog({ request, response, requestId, startedAt, now, logger }) {
+function logRequestOnFinish({ request, response, requestId, startedAt, now, logger }) {
   response.on('finish', () => {
     logger({
       event: 'request_completed',
@@ -114,12 +126,54 @@ function addRequestLog({ request, response, requestId, startedAt, now, logger })
 }
 
 function isAuthorized(request, expectedAuthorizationHash) {
-  const suppliedAuthorizationHash = hash(request.headers.authorization ?? '');
+  const suppliedAuthorizationHash = hashAuthorization(request.headers.authorization ?? '');
   return timingSafeEqual(suppliedAuthorizationHash, expectedAuthorizationHash);
 }
 
+async function calculateQuoteWithErrorContext(input, quoteCalculator) {
+  try {
+    return await quoteCalculator(input);
+  } catch (error) {
+    if (error instanceof QuoteValidationError) {
+      throw error;
+    }
+
+    throw new LayerError('quote_service', 'internal_error', 'Quote calculation failed.', error);
+  }
+}
+
+function handleRequestFailure({ error, request, response, requestId, logger }) {
+  const failure = error instanceof LayerError
+    ? error
+    : new LayerError('http', 'internal_error', 'Unhandled request failure.', error);
+  const code = Object.hasOwn(publicErrors, failure.code) ? failure.code : 'internal_error';
+  const { status, message } = publicErrors[code];
+
+  logger({
+    event: 'request_failed',
+    timestamp: new Date().toISOString(),
+    level: status >= 500 ? 'error' : 'warn',
+    requestId,
+    method: request.method,
+    layer: failure.layer,
+    code,
+    status,
+    error: errorDetails(failure)
+  });
+
+  if (!response.headersSent && !response.destroyed) {
+    addResponseHeaders(response, requestId);
+    if (status === 413) {
+      response.setHeader('Connection', 'close');
+    }
+    sendJson(response, status, { error: code, message, requestId });
+  } else if (!response.destroyed) {
+    response.destroy();
+  }
+}
+
 function createRequestHandler({ apiKey, rateLimit, windowMs, now, logger, quoteCalculator }) {
-  const expectedAuthorizationHash = hash(`Bearer ${apiKey}`);
+  const expectedAuthorizationHash = hashAuthorization(`Bearer ${apiKey}`);
   const rateLimiter = createRateLimiter({ limit: rateLimit, windowMs, now });
 
   return async function handleRequest(request, response) {
@@ -131,15 +185,15 @@ function createRequestHandler({ apiKey, rateLimit, windowMs, now, logger, quoteC
       ip: request.socket.remoteAddress ?? null
     };
     const requestLogger = event => logger({ ...event, requestId, caller: { ...caller } });
+
     try {
-      // Identify callers even for public routes and rate-limit rejections.
-      // Access checks below retain their existing order.
+      // Identify callers for logs before public-route and quota checks can return.
       caller.authenticated = isAuthorized(request, expectedAuthorizationHash);
       caller.id = caller.authenticated ? 'shared-api-client' : null;
       const startedAt = now();
 
       addResponseHeaders(response, requestId);
-      addRequestLog({ request, response, requestId, startedAt, now, logger: requestLogger });
+      logRequestOnFinish({ request, response, requestId, startedAt, now, logger: requestLogger });
 
       if (request.method === 'GET' && request.url === '/healthz') {
         sendJson(response, 200, { status: 'ok' });
@@ -182,33 +236,12 @@ function createRequestHandler({ apiKey, rateLimit, windowMs, now, logger, quoteC
       }
 
       const input = await readJsonBody(request);
-      let quote;
-      try {
-        quote = await quoteCalculator(input);
-      } catch (error) {
-        if (error instanceof QuoteValidationError) throw error;
-        throw new LayerError('quote_service', 'internal_error', 'Quote calculation failed.', error);
-      }
+      const quote = await calculateQuoteWithErrorContext(input, quoteCalculator);
       sendJson(response, 200, quote);
     } catch (error) {
-      const failure = error instanceof LayerError ? error
-        : new LayerError('http', 'internal_error', 'Unhandled request failure.', error);
-      const code = Object.hasOwn(publicErrors, failure.code) ? failure.code : 'internal_error';
-      const [status, message] = publicErrors[code];
-      // Log once at the boundary, retaining the originating layer and cause.
-      requestLogger({
-        event: 'request_failed', timestamp: new Date().toISOString(),
-        level: status >= 500 ? 'error' : 'warn', requestId,
-        method: request.method, layer: failure.layer, code, status,
-        error: errorDetails(failure)
+      handleRequestFailure({
+        error, request, response, requestId, logger: requestLogger
       });
-      if (!response.headersSent && !response.destroyed) {
-        addResponseHeaders(response, requestId);
-        if (status === 413) response.setHeader('Connection', 'close');
-        sendJson(response, status, { error: code, message, requestId });
-      } else if (!response.destroyed) {
-        response.destroy();
-      }
     }
   };
 }

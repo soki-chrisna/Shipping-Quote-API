@@ -131,11 +131,12 @@ test('serves public Swagger docs without consuming the business quota', async te
   assert.equal(spec.components.securitySchemes.bearerAuth.scheme, 'bearer');
   assert.ok(!JSON.stringify(spec).includes(API_KEY));
 
-  // Execute the documented request and compare the documented success example.
-  const operation = spec.paths['/v1/quotes'].post;
-  const quote = await request(operation.requestBody.content['application/json'].example);
+  const quoteOperation = spec.paths['/v1/quotes'].post;
+  const documentedRequest = quoteOperation.requestBody.content['application/json'].example;
+  const documentedQuote = quoteOperation.responses['200'].content['application/json'].example;
+  const quote = await request(documentedRequest);
   assert.equal(quote.status, 200);
-  assert.deepEqual(await quote.json(), operation.responses['200'].content['application/json'].example);
+  assert.deepEqual(await quote.json(), documentedQuote);
   assert.equal((await request()).status, 429);
   assert.equal((await get('/docs')).status, 200);
   assert.equal((await get('/openapi.json')).status, 200);
@@ -276,6 +277,20 @@ test('excludes credentials and request bodies from logs', async testContext => {
 test('returns fixed errors and logs each rejection at its originating layer', async testContext => {
   const logs = [];
   const request = await createTestClient(testContext, { logger: event => logs.push(event) });
+  const expectedMessages = {
+    invalid_request: 'The request is invalid.',
+    invalid_json: 'The request could not be processed.',
+    unauthorized: 'Authentication is required.',
+    not_found: 'The requested resource was not found.',
+    method_not_allowed: 'This request method is not supported.',
+    use_application_json: 'The request format is not supported.',
+    body_too_large: 'The request is too large.'
+  };
+  const specResponse = await request({}, {
+    path: '/openapi.json', method: 'GET', body: undefined, headers: {}
+  });
+  const spec = await specResponse.json();
+  const documentedResponses = spec.paths['/v1/quotes'].post.responses;
   const cases = [
     [{}, {}, 422, 'invalid_request', 'validation'],
     [{}, { body: 'private-body-secret' }, 400, 'invalid_json', 'parsing'],
@@ -290,7 +305,12 @@ test('returns fixed errors and logs each rejection at its originating layer', as
     const body = await response.json();
     assert.equal(response.status, status);
     assert.equal(body.error, code);
-    assert.equal(typeof body.message, 'string');
+    assert.equal(body.message, expectedMessages[code]);
+    const documentedError = documentedResponses[status]?.content['application/json'].example;
+    if (documentedError) {
+      assert.equal(documentedError.error, code);
+      assert.equal(documentedError.message, body.message);
+    }
     assert.equal(body.requestId, response.headers.get('x-request-id'));
     assert.deepEqual(Object.keys(body).sort(), ['error', 'message', 'requestId']);
     const failures = logs.filter(log => log.event === 'request_failed' && log.requestId === body.requestId);

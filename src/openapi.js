@@ -13,10 +13,10 @@ function jsonResponse(description, schema, example, headers = {}) {
   };
 }
 
-function errorResponse(description, error, headers) {
+function errorResponse(description, errorCode, headers) {
   return jsonResponse(description, { $ref: '#/components/schemas/Error' }, {
-    error,
-    message: publicErrors[error][1],
+    error: errorCode,
+    message: publicErrors[errorCode].message,
     requestId: '7d9104fd-3458-41d0-b035-bfb34e854a9d'
   }, headers);
 }

@@ -1,17 +1,18 @@
 export const publicErrors = Object.freeze({
-  invalid_json: [400, 'The request could not be processed.'],
-  request_aborted: [400, 'The request could not be processed.'],
-  unauthorized: [401, 'Authentication is required.'],
-  not_found: [404, 'The requested resource was not found.'],
-  method_not_allowed: [405, 'This request method is not supported.'],
-  body_too_large: [413, 'The request is too large.'],
-  use_application_json: [415, 'The request format is not supported.'],
-  invalid_request: [422, 'The request is invalid.'],
-  rate_limit_exceeded: [429, 'Too many requests. Please try again later.'],
-  internal_error: [500, 'Something went wrong. Please try again later.']
+  invalid_json: { status: 400, message: 'The request could not be processed.' },
+  request_aborted: { status: 400, message: 'The request could not be processed.' },
+  unauthorized: { status: 401, message: 'Authentication is required.' },
+  not_found: { status: 404, message: 'The requested resource was not found.' },
+  method_not_allowed: { status: 405, message: 'This request method is not supported.' },
+  body_too_large: { status: 413, message: 'The request is too large.' },
+  use_application_json: { status: 415, message: 'The request format is not supported.' },
+  invalid_request: { status: 422, message: 'The request is invalid.' },
+  rate_limit_exceeded: { status: 429, message: 'Too many requests. Please try again later.' },
+  internal_error: { status: 500, message: 'Something went wrong. Please try again later.' }
 });
 
-// Carries internal context only. HTTP responses are built from publicErrors.
+const MAX_ERROR_CAUSE_DEPTH = 5;
+
 export class LayerError extends Error {
   constructor(layer, code, message, cause) {
     super(message, { cause });
@@ -30,23 +31,36 @@ export class QuoteValidationError extends LayerError {
 }
 
 export function errorDetails(error, depth = 0) {
-  if (!(error instanceof Error)) return { name: 'NonError', message: String(error) };
+  if (!(error instanceof Error)) {
+    return { name: 'NonError', message: String(error) };
+  }
+
   const details = { name: error.name, message: error.message, stack: error.stack };
-  if (error.code) details.code = error.code;
-  if (error.cause !== undefined && depth < 5) details.cause = errorDetails(error.cause, depth + 1);
+
+  if (error.code) {
+    details.code = error.code;
+  }
+  if (error.cause !== undefined && depth < MAX_ERROR_CAUSE_DEPTH) {
+    details.cause = errorDetails(error.cause, depth + 1);
+  }
+
   return details;
+}
+
+function serializeWithRedactedApiKey(event, apiKey) {
+  return JSON.stringify(event, (key, value) =>
+    typeof value === 'string' ? value.split(apiKey).join('[REDACTED]') : value);
 }
 
 export function createSafeLogger(logger, apiKey) {
   return event => {
-    // Redact the configured credential even when embedded in exception details.
-    const serialized = JSON.stringify(event, (key, value) =>
-      typeof value === 'string' ? value.split(apiKey).join('[REDACTED]') : value);
+    const redactedEventJson = serializeWithRedactedApiKey(event, apiKey);
+
     try {
-      logger(JSON.parse(serialized));
+      logger(JSON.parse(redactedEventJson));
     } catch {
       // A broken logging sink must neither crash requests nor lose their evidence.
-      console.error(serialized);
+      console.error(redactedEventJson);
     }
   };
 }
