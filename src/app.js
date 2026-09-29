@@ -2,6 +2,8 @@ import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import http from 'node:http';
 
 import { calculateQuote } from './quote.js';
+import { openApiDocument, swaggerHtml } from './openapi.js';
+import { LayerError, QuoteValidationError, publicErrors, errorDetails, createSafeLogger } from './errors.js';
 
 export { calculateQuote } from './quote.js';
 
@@ -9,10 +11,9 @@ const CONTENT_TYPE_JSON = 'application/json; charset=utf-8';
 const MAX_BODY_BYTES = 4096;
 const MIN_API_KEY_LENGTH = 32;
 
-class RequestBodyTooLargeError extends Error {}
-
-function hash(value) {
-  return createHash('sha256').update(value).digest();
+function hashAuthorization(authorization) {
+  // timingSafeEqual requires equal-length buffers, even for invalid credentials.
+  return createHash('sha256').update(authorization).digest();
 }
 
 function validateApiKey(apiKey) {
@@ -53,8 +54,9 @@ function createRateLimiter({ limit, windowMs, now }) {
 }
 
 function sendJson(response, status, body) {
+  const serialized = JSON.stringify(body);
   response.writeHead(status, { 'Content-Type': CONTENT_TYPE_JSON });
-  response.end(JSON.stringify(body));
+  response.end(serialized);
 }
 
 function isJsonRequest(request) {
@@ -64,19 +66,45 @@ function isJsonRequest(request) {
 
 async function readJsonBody(request) {
   const chunks = [];
-  let size = 0;
+  let receivedBytes = 0;
 
-  for await (const chunk of request) {
-    size += chunk.length;
+  try {
+    for await (const chunk of request) {
+      receivedBytes += chunk.length;
 
-    if (size > MAX_BODY_BYTES) {
-      throw new RequestBodyTooLargeError();
+      if (receivedBytes > MAX_BODY_BYTES) {
+        throw new LayerError('body', 'body_too_large', `Request body exceeded ${MAX_BODY_BYTES} bytes.`);
+      }
+
+      chunks.push(chunk);
+    }
+  } catch (error) {
+    if (error instanceof LayerError) {
+      throw error;
     }
 
-    chunks.push(chunk);
+    const wasDisconnected = request.aborted || error.code === 'ECONNRESET';
+    const code = wasDisconnected ? 'request_aborted' : 'internal_error';
+    throw new LayerError('body', code, 'Failed to read request body.', error);
   }
 
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  return parseRequestJson(Buffer.concat(chunks).toString('utf8'));
+}
+
+function parseRequestJson(bodyText) {
+  try {
+    return JSON.parse(bodyText);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) {
+      throw error;
+    }
+
+    // JSON.parse messages can contain submitted data; retain only call frames.
+    const sanitizedCause = new SyntaxError('Malformed JSON; request content omitted.');
+    const stackFrames = error.stack.split('\n').filter(line => /^\s+at /.test(line));
+    sanitizedCause.stack = `${sanitizedCause.name}: ${sanitizedCause.message}\n${stackFrames.join('\n')}`;
+    throw new LayerError('parsing', 'invalid_json', 'Failed to parse request JSON.', sanitizedCause);
+  }
 }
 
 function addResponseHeaders(response, requestId) {
@@ -85,9 +113,10 @@ function addResponseHeaders(response, requestId) {
   response.setHeader('Cache-Control', 'no-store');
 }
 
-function addRequestLog({ request, response, requestId, startedAt, now, logger }) {
+function logRequestOnFinish({ request, response, requestId, startedAt, now, logger }) {
   response.on('finish', () => {
     logger({
+      event: 'request_completed',
       requestId,
       method: request.method,
       status: response.statusCode,
@@ -97,83 +126,122 @@ function addRequestLog({ request, response, requestId, startedAt, now, logger })
 }
 
 function isAuthorized(request, expectedAuthorizationHash) {
-  const suppliedAuthorizationHash = hash(request.headers.authorization ?? '');
+  const suppliedAuthorizationHash = hashAuthorization(request.headers.authorization ?? '');
   return timingSafeEqual(suppliedAuthorizationHash, expectedAuthorizationHash);
 }
 
-function createRequestHandler({ apiKey, rateLimit, windowMs, now, logger }) {
-  const expectedAuthorizationHash = hash(`Bearer ${apiKey}`);
+async function calculateQuoteWithErrorContext(input, quoteCalculator) {
+  try {
+    return await quoteCalculator(input);
+  } catch (error) {
+    if (error instanceof QuoteValidationError) {
+      throw error;
+    }
+
+    throw new LayerError('quote_service', 'internal_error', 'Quote calculation failed.', error);
+  }
+}
+
+function handleRequestFailure({ error, request, response, requestId, logger }) {
+  const failure = error instanceof LayerError
+    ? error
+    : new LayerError('http', 'internal_error', 'Unhandled request failure.', error);
+  const code = Object.hasOwn(publicErrors, failure.code) ? failure.code : 'internal_error';
+  const { status, message } = publicErrors[code];
+
+  logger({
+    event: 'request_failed',
+    timestamp: new Date().toISOString(),
+    level: status >= 500 ? 'error' : 'warn',
+    requestId,
+    method: request.method,
+    layer: failure.layer,
+    code,
+    status,
+    error: errorDetails(failure)
+  });
+
+  if (!response.headersSent && !response.destroyed) {
+    addResponseHeaders(response, requestId);
+    if (status === 413) {
+      response.setHeader('Connection', 'close');
+    }
+    sendJson(response, status, { error: code, message, requestId });
+  } else if (!response.destroyed) {
+    response.destroy();
+  }
+}
+
+function createRequestHandler({ apiKey, rateLimit, windowMs, now, logger, quoteCalculator }) {
+  const expectedAuthorizationHash = hashAuthorization(`Bearer ${apiKey}`);
   const rateLimiter = createRateLimiter({ limit: rateLimit, windowMs, now });
 
   return async function handleRequest(request, response) {
     const requestId = randomUUID();
-    const startedAt = now();
-
-    addResponseHeaders(response, requestId);
-    addRequestLog({ request, response, requestId, startedAt, now, logger });
-
-    if (request.method === 'GET' && request.url === '/healthz') {
-      sendJson(response, 200, { status: 'ok' });
-      return;
-    }
-
-    const rateLimitResult = rateLimiter.consume();
-
-    if (!rateLimitResult.allowed) {
-      response.setHeader('Retry-After', String(rateLimitResult.retryAfterSeconds));
-      sendJson(response, 429, { error: 'rate_limit_exceeded', requestId });
-      return;
-    }
-
-    if (!isAuthorized(request, expectedAuthorizationHash)) {
-      sendJson(response, 401, { error: 'unauthorized', requestId });
-      return;
-    }
-
-    if (request.url !== '/v1/quotes') {
-      sendJson(response, 404, { error: 'not_found', requestId });
-      return;
-    }
-
-    if (request.method !== 'POST') {
-      response.setHeader('Allow', 'POST');
-      sendJson(response, 405, { error: 'method_not_allowed', requestId });
-      return;
-    }
-
-    if (!isJsonRequest(request)) {
-      sendJson(response, 415, { error: 'use_application_json', requestId });
-      return;
-    }
-
-    let input;
+    // Snapshot the connection address before a disconnect can clear it.
+    const caller = {
+      id: null,
+      authenticated: false,
+      ip: request.socket.remoteAddress ?? null
+    };
+    const requestLogger = event => logger({ ...event, requestId, caller: { ...caller } });
 
     try {
-      input = await readJsonBody(request);
-    } catch (error) {
-      if (error instanceof RequestBodyTooLargeError) {
-        response.setHeader('Connection', 'close');
-        sendJson(response, 413, { error: 'body_too_large', requestId });
+      // Identify callers for logs before public-route and quota checks can return.
+      caller.authenticated = isAuthorized(request, expectedAuthorizationHash);
+      caller.id = caller.authenticated ? 'shared-api-client' : null;
+      const startedAt = now();
+
+      addResponseHeaders(response, requestId);
+      logRequestOnFinish({ request, response, requestId, startedAt, now, logger: requestLogger });
+
+      if (request.method === 'GET' && request.url === '/healthz') {
+        sendJson(response, 200, { status: 'ok' });
         return;
       }
 
-      if (error instanceof SyntaxError) {
-        sendJson(response, 400, { error: 'invalid_json', requestId });
+      if (request.method === 'GET' && (request.url === '/docs' || request.url === '/docs/')) {
+        response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        response.end(swaggerHtml);
         return;
       }
 
-      if (!response.headersSent && !response.destroyed) {
-        sendJson(response, 400, { error: 'request_aborted', requestId });
+      if (request.method === 'GET' && request.url === '/openapi.json') {
+        sendJson(response, 200, openApiDocument);
+        return;
       }
 
-      return;
-    }
+      const rateLimitResult = rateLimiter.consume();
 
-    try {
-      const quote = calculateQuote(input);
+      if (!rateLimitResult.allowed) {
+        response.setHeader('Retry-After', String(rateLimitResult.retryAfterSeconds));
+        throw new LayerError('rate_limit', 'rate_limit_exceeded', 'Process request quota exceeded.');
+      }
+
+      if (!caller.authenticated) {
+        throw new LayerError('authentication', 'unauthorized', 'Bearer credentials missing or incorrect.');
+      }
+
+      if (request.url !== '/v1/quotes') {
+        throw new LayerError('routing', 'not_found', 'No matching application route.');
+      }
+
+      if (request.method !== 'POST') {
+        response.setHeader('Allow', 'POST');
+        throw new LayerError('routing', 'method_not_allowed', 'Quote route requires POST.');
+      }
+
+      if (!isJsonRequest(request)) {
+        throw new LayerError('content_type', 'use_application_json', 'Expected application/json media type.');
+      }
+
+      const input = await readJsonBody(request);
+      const quote = await calculateQuoteWithErrorContext(input, quoteCalculator);
       sendJson(response, 200, quote);
     } catch (error) {
-      sendJson(response, 422, { error: error.message, requestId });
+      handleRequestFailure({
+        error, request, response, requestId, logger: requestLogger
+      });
     }
   };
 }
@@ -183,7 +251,8 @@ export function createApp({
   rateLimit = 60,
   windowMs = 60000,
   now = Date.now,
-  logger = event => console.log(JSON.stringify(event))
+  logger = event => console.log(JSON.stringify(event)),
+  quoteCalculator = calculateQuote
 } = {}) {
   validateApiKey(apiKey);
 
@@ -192,7 +261,8 @@ export function createApp({
     rateLimit,
     windowMs,
     now,
-    logger
+    logger: createSafeLogger(logger, apiKey),
+    quoteCalculator
   });
 
   const server = http.createServer(requestHandler);

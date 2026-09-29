@@ -83,6 +83,21 @@ Local npm commands load `.env` through Node's `--env-file` option. The file is i
 
 ## API
 
+### Swagger UI
+
+After `npm start`, open [Swagger UI](http://localhost:3000/docs). Click **Authorize**,
+enter the `API_KEY` from your local environment without the `Bearer ` prefix, then use
+**Try it out** on `POST /v1/quotes`. Authorization is not persisted across page reloads.
+
+The OpenAPI 3.0 specification is available at [ `/openapi.json`](http://localhost:3000/openapi.json)
+and defined in [`src/openapi.js`](src/openapi.js). Both documentation endpoints are public
+and exempt from the business rate limit. Quote requests made through Swagger UI still
+require authentication and count toward that limit.
+
+Swagger UI loads version-pinned JavaScript and CSS from `unpkg.com`, so the browser needs
+internet access. The JSON specification remains available offline. The external Swagger
+validator is disabled. No additional npm packages or Docker changes are required.
+
 ### Health check
 
 ```http
@@ -145,7 +160,7 @@ Example response:
 
 Rate-limited responses include `Retry-After`. All responses include `X-Request-Id`, `Cache-Control: no-store`, and `X-Content-Type-Options: nosniff`.
 
-Request logs are emitted as structured JSON with the request ID, method, status, and duration. Bearer tokens and request bodies are not logged.
+Request logs are emitted as structured JSON with the request ID, method, status, and duration. Every request completion and failure log includes `caller` with the authenticated shared API client identity (or null), authentication status, and direct connection IP address. The shared key cannot identify individual users. Bearer tokens and request bodies are not logged.
 
 ## Architecture
 
@@ -199,7 +214,9 @@ The image contains only `src/`, runs as the non-root `node` user, and defines `s
 ```text
 src/
   app.js                    HTTP routing, security, and request handling
+  errors.js                 Error definitions and safe structured logging
   healthcheck.js            Container health probe
+  openapi.js                OpenAPI contract and Swagger UI page
   quote.js                  Quote validation and pricing rules
   server.js                 Process startup and graceful shutdown
 
@@ -218,6 +235,7 @@ scripts/
   pipeline.yml              Test, image publishing, and deployment workflow
 
 docs/
+  API.md                    Request, response, and logging contracts
   ARCHITECTURE.md           Architecture decisions, limits, and tradeoffs
   DEPLOYMENT.md             Deployment and recovery runbook
 ```
@@ -240,6 +258,7 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) before changing authenticatio
 
 ## Documentation
 
+- [`docs/API.md`](docs/API.md) — request, response, and logging contracts
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — boundaries, security decisions, and known limitations
 - [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — local Docker usage and production deployment
 - [`AGENTS.md`](AGENTS.md) — repository-specific guidance for AI-assisted changes

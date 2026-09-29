@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { once } from 'node:events';
+import http from 'node:http';
 import test from 'node:test';
 import { promisify, stripVTControlCharacters } from 'node:util';
 
 import { createApp } from '../src/app.js';
 import { calculateQuote } from '../src/quote.js';
+import { createSafeLogger } from '../src/errors.js';
 
 const API_KEY = 'test-only-key-with-at-least-32-characters';
 const DEFAULT_QUOTE_REQUEST = {
@@ -104,6 +106,92 @@ test('returns the expected quote contract', async testContext => {
   assert.equal(response.headers.get('cache-control'), 'no-store');
 });
 
+test('serves public Swagger docs without consuming the business quota', async testContext => {
+  const request = await createTestClient(testContext, { rateLimit: 1 });
+  const get = path => request({}, { path, method: 'GET', body: undefined, headers: {} });
+
+  for (const path of ['/docs', '/docs/']) {
+    const response = await get(path);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type'), /text\/html/);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    const html = await response.text();
+    assert.match(html, /SwaggerUIBundle/);
+    assert.match(html, /url: '\/openapi.json'/);
+    assert.ok(!html.includes(API_KEY));
+  }
+
+  const specResponse = await get('/openapi.json');
+  assert.equal(specResponse.status, 200);
+  assert.match(specResponse.headers.get('content-type'), /application\/json/);
+  const spec = await specResponse.json();
+  assert.equal(spec.openapi, '3.0.3');
+  assert.deepEqual(spec.paths['/healthz'].get.security, []);
+  assert.deepEqual(spec.security, [{ bearerAuth: [] }]);
+  assert.equal(spec.components.securitySchemes.bearerAuth.scheme, 'bearer');
+  assert.ok(!JSON.stringify(spec).includes(API_KEY));
+
+  const quoteOperation = spec.paths['/v1/quotes'].post;
+  const documentedRequest = quoteOperation.requestBody.content['application/json'].example;
+  const documentedQuote = quoteOperation.responses['200'].content['application/json'].example;
+  const quote = await request(documentedRequest);
+  assert.equal(quote.status, 200);
+  assert.deepEqual(await quote.json(), documentedQuote);
+  assert.equal((await request()).status, 429);
+  assert.equal((await get('/docs')).status, 200);
+  assert.equal((await get('/openapi.json')).status, 200);
+});
+
+test('documentation routes do not bypass authentication for other methods or paths', async testContext => {
+  const request = await createTestClient(testContext);
+  for (const path of ['/docs', '/openapi.json', '/docs/private']) {
+    assert.equal((await request({}, { path, headers: {} })).status, 401);
+    assert.equal((await request({}, { path })).status, 404);
+  }
+});
+
+test('keeps rate limit counters isolated between instances', async (testContext) => {
+  const clientOne = await createTestClient(testContext, {
+    rateLimit: 2, windowMs: 60000, now: () => 0
+  });
+
+  const clientOneResponse = await clientOne();
+  assert.equal(clientOneResponse.status, 200);
+  const secondClientOneResponse = await clientOne();
+  assert.equal(secondClientOneResponse.status, 200);
+  const thirdClientOneResponse = await clientOne();
+  assert.equal(thirdClientOneResponse.status, 429);
+  assert.equal(thirdClientOneResponse.headers.get('retry-after'), '60');
+
+  const healthCheck = await clientOne({}, {
+    path: '/healthz',
+    method: 'GET',
+    body: undefined,
+    headers: {}
+  });
+
+  assert.equal(healthCheck.status, 200);
+
+  const clientTwo = await createTestClient(testContext, {
+    rateLimit: 2, windowMs: 60000, now: () => 0
+  });
+  const clientTwoResponse = await clientTwo();
+  assert.equal(clientTwoResponse.status, 200);
+  const secondClientTwoResponse = await clientTwo();
+  assert.equal(secondClientTwoResponse.status, 200);
+  const thirdClientTwoResponse = await clientTwo();
+  assert.equal(thirdClientTwoResponse.status, 429);
+  assert.equal(thirdClientTwoResponse.headers.get('retry-after'), '60');
+  
+  const secondHealthCheck = await clientTwo({}, {
+    path: '/healthz',
+    method: 'GET',
+    body: undefined,
+    headers: {}
+  });
+  assert.equal(secondHealthCheck.status, 200);
+});
+
 test('rejects missing and incorrect credentials', async testContext => {
   const requestQuote = await createTestClient(testContext);
 
@@ -181,8 +269,192 @@ test('excludes credentials and request bodies from logs', async testContext => {
 
   assert.equal(logs.length, 1);
   assert.equal(logs[0].status, 200);
+  assert.deepEqual(logs[0].caller, { id: 'shared-api-client', authenticated: true, ip: '127.0.0.1' });
   assert.ok(!serializedLogs.includes(API_KEY));
   assert.ok(!serializedLogs.includes('domestic'));
+});
+
+test('returns fixed errors and logs each rejection at its originating layer', async testContext => {
+  const logs = [];
+  const request = await createTestClient(testContext, { logger: event => logs.push(event) });
+  const expectedMessages = {
+    invalid_request: 'The request is invalid.',
+    invalid_json: 'The request could not be processed.',
+    unauthorized: 'Authentication is required.',
+    not_found: 'The requested resource was not found.',
+    method_not_allowed: 'This request method is not supported.',
+    use_application_json: 'The request format is not supported.',
+    body_too_large: 'The request is too large.'
+  };
+  const specResponse = await request({}, {
+    path: '/openapi.json', method: 'GET', body: undefined, headers: {}
+  });
+  const spec = await specResponse.json();
+  const documentedResponses = spec.paths['/v1/quotes'].post.responses;
+  const cases = [
+    [{}, {}, 422, 'invalid_request', 'validation'],
+    [{}, { body: 'private-body-secret' }, 400, 'invalid_json', 'parsing'],
+    [{}, { headers: {} }, 401, 'unauthorized', 'authentication'],
+    [{}, { path: '/missing' }, 404, 'not_found', 'routing'],
+    [{}, { method: 'GET', body: undefined }, 405, 'method_not_allowed', 'routing'],
+    [{}, { headers: { authorization: `Bearer ${API_KEY}` } }, 415, 'use_application_json', 'content_type'],
+    [{ data: 'x'.repeat(5000) }, {}, 413, 'body_too_large', 'body']
+  ];
+  for (const [input, options, status, code, layer] of cases) {
+    const response = await request(input, options);
+    const body = await response.json();
+    assert.equal(response.status, status);
+    assert.equal(body.error, code);
+    assert.equal(body.message, expectedMessages[code]);
+    const documentedError = documentedResponses[status]?.content['application/json'].example;
+    if (documentedError) {
+      assert.equal(documentedError.error, code);
+      assert.equal(documentedError.message, body.message);
+    }
+    assert.equal(body.requestId, response.headers.get('x-request-id'));
+    assert.deepEqual(Object.keys(body).sort(), ['error', 'message', 'requestId']);
+    const failures = logs.filter(log => log.event === 'request_failed' && log.requestId === body.requestId);
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].layer, layer);
+    assert.equal(failures[0].status, status);
+    for (const event of logs.filter(log => log.requestId === body.requestId)) {
+      assert.deepEqual(event.caller, {
+        id: status === 401 ? null : 'shared-api-client',
+        authenticated: status !== 401, ip: '127.0.0.1'
+      });
+    }
+    assert.ok(failures[0].error.stack);
+    assert.ok(!JSON.stringify(body).includes(failures[0].error.message));
+  }
+  assert.ok(!JSON.stringify(logs).includes('private-body-secret'));
+  assert.ok(!JSON.stringify(logs).includes(API_KEY));
+  assert.match(logs.find(log => log.layer === 'validation').error.message, /weightGrams/);
+});
+
+test('unexpected service failures return 500 and retain internal causes for investigation', async testContext => {
+  for (const thrown of [new Error('internal database detail', { cause: new Error('root failure') }), 'non-error failure']) {
+    const logs = [];
+    const request = await createTestClient(testContext, {
+      logger: event => logs.push(event),
+      quoteCalculator: async () => { throw thrown; }
+    });
+    const response = await request();
+    const body = await response.json();
+    assert.equal(response.status, 500);
+    assert.deepEqual(body, {
+      error: 'internal_error', message: 'Something went wrong. Please try again later.',
+      requestId: response.headers.get('x-request-id')
+    });
+    const failures = logs.filter(log => log.event === 'request_failed');
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].requestId, body.requestId);
+    assert.equal(failures[0].layer, 'quote_service');
+    assert.equal(failures[0].caller.id, 'shared-api-client');
+    assert.equal(failures[0].error.cause.message, thrown.message ?? thrown);
+    if (thrown instanceof Error) {
+      assert.equal(failures[0].error.cause.cause.message, 'root failure');
+      assert.match(failures[0].error.cause.stack, /api.test.js/);
+    }
+  }
+});
+
+test('HTTP boundary catches response serialization failures', async testContext => {
+  const logs = [];
+  const request = await createTestClient(testContext, {
+    logger: event => logs.push(event), quoteCalculator: () => ({ amount: 1n })
+  });
+  const response = await request();
+  assert.equal(response.status, 500);
+  assert.equal((await response.json()).error, 'internal_error');
+  assert.equal(logs.find(log => log.event === 'request_failed').layer, 'http');
+  assert.equal(logs.find(log => log.event === 'request_failed').caller.id, 'shared-api-client');
+});
+
+test('rate limiting failures have correlated layer logs', async testContext => {
+  const logs = [];
+  const request = await createTestClient(testContext, { rateLimit: 0, logger: event => logs.push(event) });
+  const response = await request();
+  assert.equal(response.status, 429);
+  const body = await response.json();
+  assert.equal(logs[0].layer, 'rate_limit');
+  assert.equal(logs[0].requestId, body.requestId);
+  assert.equal(logs[0].caller.id, 'shared-api-client');
+});
+
+test('caller context is isolated and ignores spoofed identity headers on public and limited requests', async testContext => {
+  const logs = [];
+  const request = await createTestClient(testContext, { rateLimit: 0, logger: event => logs.push(event) });
+  await Promise.all(['/healthz', '/docs', '/openapi.json', '/v1/quotes'].flatMap(path =>
+    [undefined, 'Bearer wrong-secret', `Bearer ${API_KEY}`].map(async authorization => {
+      const headers = { 'x-forwarded-for': '203.0.113.10', 'x-user-id': 'spoofed-user' };
+      if (authorization) headers.authorization = authorization;
+      const response = await request({}, { path, method: 'GET', body: undefined, headers });
+      await response.text();
+      assert.equal(response.status, path === '/v1/quotes' ? 429 : 200);
+      const events = logs.filter(event => event.requestId === response.headers.get('x-request-id'));
+      assert.equal(events.length, path === '/v1/quotes' ? 2 : 1);
+      for (const event of events) {
+        assert.deepEqual(event.caller, {
+          id: authorization === `Bearer ${API_KEY}` ? 'shared-api-client' : null,
+          authenticated: authorization === `Bearer ${API_KEY}`, ip: '127.0.0.1'
+        });
+      }
+    })
+  ));
+  for (const secret of [API_KEY, 'wrong-secret', 'spoofed-user', '203.0.113.10']) {
+    assert.ok(!JSON.stringify(logs).includes(secret));
+  }
+});
+
+test('stderr fallback retains caller context for request completion and failure', async testContext => {
+  const logs = [];
+  testContext.mock.method(console, 'error', line => logs.push(JSON.parse(line)));
+  const request = await createTestClient(testContext, {
+    logger: () => { throw new Error('sink offline'); }
+  });
+  const response = await request({});
+  await response.json();
+  assert.equal(logs.length, 2);
+  for (const event of logs) {
+    assert.deepEqual(event.caller, { id: 'shared-api-client', authenticated: true, ip: '127.0.0.1' });
+    assert.equal(event.requestId, response.headers.get('x-request-id'));
+  }
+});
+
+test('logging sink failure preserves redacted evidence on stderr', testContext => {
+  const fallback = [];
+  testContext.mock.method(console, 'error', line => fallback.push(JSON.parse(line)));
+  const secret = 'test-key-with-escaped-"-characters';
+  const logger = createSafeLogger(() => { throw new Error('sink offline'); }, secret);
+  logger({ event: 'request_failed', error: { message: `failed with ${secret}` } });
+  assert.deepEqual(fallback, [{ event: 'request_failed', error: { message: 'failed with [REDACTED]' } }]);
+});
+
+test('client disconnect logs the body failure even without a response', { timeout: 5000 }, async testContext => {
+  let resolveFailure;
+  const failure = new Promise(resolve => { resolveFailure = resolve; });
+  const server = createApp({
+    apiKey: API_KEY,
+    logger: event => { if (event.event === 'request_failed') resolveFailure(event); }
+  });
+  testContext.after(() => { server.closeAllConnections(); server.close(); });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const received = once(server, 'request');
+  const request = http.request({
+    host: '127.0.0.1', port: server.address().port, path: '/v1/quotes', method: 'POST',
+    headers: { authorization: `Bearer ${API_KEY}`, 'content-type': 'application/json', 'content-length': 100 }
+  });
+  request.on('error', () => {});
+  request.write('{');
+  await received;
+  request.destroy();
+  const event = await failure;
+  assert.equal(event.layer, 'body');
+  assert.equal(event.code, 'request_aborted');
+  assert.equal(event.error.cause.code, 'ECONNRESET');
+  assert.deepEqual(event.caller, { id: 'shared-api-client', authenticated: true, ip: '127.0.0.1' });
+  assert.ok(event.requestId);
 });
 
 test('checkout succeeds and fails closed on authentication failure', async testContext => {
